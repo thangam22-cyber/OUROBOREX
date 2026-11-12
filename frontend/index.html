@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OUROBOREX</title>
+<style>
+:root{--bg:#070b16;--p:#0d1526;--b:#1e3358;--t:#d6e2f5;--m:#7d8fb0;--c:#38d5f5;--r:#ff4d5e;--g:#38e08c;--y:#ffc857}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--t);font:13px/1.4 "Segoe UI",system-ui,sans-serif}
+body{display:grid;grid-template-rows:48px 1fr;min-height:100vh}
+header{display:flex;align-items:center;gap:14px;padding:0 18px;border-bottom:1px solid var(--b);background:linear-gradient(90deg,#0a1226,#10203f)}
+h1{font-size:19px;letter-spacing:.28em;margin:0;color:#fff;font-weight:600}
+header span{color:var(--m)}
+.badge{margin-left:auto;padding:2px 10px;border-radius:10px;border:1px solid var(--b);font-weight:600}
+.badge.live{color:var(--g);border-color:var(--g)}.badge.demo{color:var(--y);border-color:var(--y)}
+main{display:grid;grid-template-columns:290px 1fr 310px;gap:10px;padding:10px;min-height:0}
+.col{display:flex;flex-direction:column;gap:10px;min-height:0}
+.pn{background:var(--p);border:1px solid var(--b);border-radius:6px;padding:10px;min-height:0;overflow:hidden}
+.pn h2{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--c)}
+#kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.k{text-align:center}.k b{display:block;font-size:22px;color:var(--r)}.k span{color:var(--m);font-size:11px}
+#mapbox{flex:1.3}#mapbox svg{width:100%;height:100%}
+#graphbox{flex:1;position:relative}#cy{position:absolute;inset:30px 6px 6px}
+.row{position:relative;display:flex;justify-content:space-between;padding:5px 6px;margin-bottom:4px;cursor:pointer;border-radius:3px;overflow:hidden}
+.row i{position:absolute;left:0;bottom:0;height:2px;background:var(--r)}
+.row:hover{background:#13213f}.row em{font-style:normal;color:var(--r)}
+.bar{display:grid;grid-template-columns:90px 1fr 34px;gap:6px;align-items:center;margin-bottom:5px}
+.bar div{height:6px;background:#15233f;border-radius:3px}.bar div i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,#3b7bff,var(--r))}
+.bar span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bar em{font-style:normal;text-align:right;color:var(--m)}
+#log{height:150px;overflow:auto;font-size:12px}#log div{padding:2px 0;border-bottom:1px solid #12203a}
+#log time{color:var(--m)}#log b{color:var(--r)}
+#detail{font-size:12px;color:var(--m)}#detail table{width:100%;margin-top:6px;border-collapse:collapse}
+#detail td{padding:2px 0;color:var(--t)}#detail td:last-child{text-align:right}
+@media(max-width:1000px){main{grid-template-columns:1fr}body{display:block}#mapbox{height:300px}#graphbox{height:360px}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<header><h1>OUROBOREX</h1><span>Threat intelligence you can trace to the source</span><div id="mode" class="badge">...</div></header>
+<main>
+  <div class="col">
+    <div class="pn"><h2>Top incident hosts</h2><div id="hosts"></div></div>
+    <div class="pn" style="flex:1"><h2>ThreatScore breakdown</h2><div id="detail">Select a host or a graph node to see why it scored what it did.</div></div>
+  </div>
+  <div class="col">
+    <div class="pn"><div id="kpis"></div></div>
+    <div class="pn" id="mapbox"><svg id="map"></svg></div>
+    <div class="pn" id="graphbox"><h2>SignalGraph: host, family, network, country</h2><div id="cy"></div></div>
+  </div>
+  <div class="col">
+    <div class="pn"><h2>Top source countries</h2><div id="cc"></div></div>
+    <div class="pn"><h2>Malware families</h2><div id="fam"></div></div>
+    <div class="pn"><h2>Indicators over time</h2><svg id="trend" viewBox="0 0 300 70" style="width:100%"></svg></div>
+    <div class="pn" style="flex:1"><h2>Live events</h2><div id="log"></div></div>
+  </div>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson-client/3.1.0/topojson-client.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let S=null,cy=null,sig="",timer=null;
+const W=900,H=450,proj=d3.geoNaturalEarth1().fitSize([W,H],{type:"Sphere"}),path=d3.geoPath(proj);
+const svg=d3.select("#map").attr("viewBox",`0 0 ${W} ${H}`);
+svg.append("path").datum({type:"Sphere"}).attr("d",path).attr("fill","#0a1428").attr("stroke","#1e3358");
+svg.append("path").datum(d3.geoGraticule10()).attr("d",path).attr("fill","none").attr("stroke","#14264a").attr("stroke-width",.4);
+const gLand=svg.append("g"),gPts=svg.append("g"),gArcs=svg.append("g"),gHome=svg.append("g");
+fetch("https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-110m.json").then(r=>r.json()).then(t=>{
+  gLand.selectAll("path").data(topojson.feature(t,t.objects.countries).features).join("path")
+    .attr("d",path).attr("fill","#15294d").attr("stroke","#264673").attr("stroke-width",.4);
+}).catch(()=>{});
+
+function arc(p){
+  if(!S)return;const a=proj([p.lon,p.lat]),b=proj([S.home[1],S.home[0]]);if(!a||!b)return;
+  const mx=(a[0]+b[0])/2,my=(a[1]+b[1])/2-Math.hypot(a[0]-b[0],a[1]-b[1])*.25;
+  const el=gArcs.append("path").attr("d",`M${a[0]},${a[1]}Q${mx},${my} ${b[0]},${b[1]}`).attr("fill","none")
+    .attr("stroke","#ff4d5e").attr("stroke-width",1.4).attr("stroke-linecap","round");
+  const L=el.node().getTotalLength();
+  el.attr("stroke-dasharray",L).attr("stroke-dashoffset",L).transition().duration(1100).ease(d3.easeCubicOut)
+    .attr("stroke-dashoffset",0).transition().duration(900).style("opacity",0).remove();
+  gArcs.append("circle").attr("cx",a[0]).attr("cy",a[1]).attr("r",2).attr("fill","none").attr("stroke","#ff4d5e")
+    .transition().duration(1400).attr("r",14).style("opacity",0).remove();
+}
+const bars=(sel,items,max)=>{$(sel).innerHTML=items.map(([k,v])=>`<div class=bar><span>${esc(k)}</span><div><i style="width:${Math.max(4,100*v/max)}%"></i></div><em>${v}</em></div>`).join("")};
+
+function detail(ip){
+  const p=S.points.find(x=>x.ip===ip);if(!p)return;
+  const w={R:.40,F:.25,I:.20,C:.15},n={R:"Source reputation",F:"Freshness",I:"Infrastructure active",C:"Corroboration"};
+  $("#detail").innerHTML=`<b style="color:#fff">${esc(p.ip)}:${esc(p.port)}</b><br>${esc(p.fam)} · ${esc(p.asn)} ${esc(p.asname||"")}<br>${esc(p.city)}, ${esc(p.country)} · source ${esc(p.src)}
+  <table>${Object.keys(w).map(k=>`<tr><td>${n[k]} (weight ${w[k]})</td><td>${p.parts[k]}</td></tr>`).join("")}
+  <tr><td><b>ThreatScore</b></td><td><b style="color:var(--r)">${p.score}</b></td></tr></table>
+  <div style="margin-top:6px">Score = 100 × (0.40R + 0.25F + 0.20I + 0.15C). Rule-based, not a trained model.</div>`;
+}
+
+function render(){
+  const s=S.stats,m=S.status.mode;
+  $("#mode").textContent=m==="live"?"LIVE FEED":m.toUpperCase();$("#mode").className="badge "+m;
+  $("#kpis").innerHTML=[["Indicators",s.total],["Active C2",s.online],["High risk",s.high],["Families",s.families],["Countries",s.countries]]
+    .map(([k,v])=>`<div class=k><b>${v}</b><span>${k}</span></div>`).join("");
+  gPts.selectAll("circle").data(S.points,d=>d.ip).join("circle")
+    .attr("cx",d=>proj([d.lon,d.lat])[0]).attr("cy",d=>proj([d.lon,d.lat])[1]).attr("r",2.2)
+    .attr("fill",d=>d.score>=70?"#ff4d5e":"#ff9b54").attr("opacity",.8);
+  const h=proj([S.home[1],S.home[0]]);
+  gHome.selectAll("circle").data([h]).join("circle").attr("cx",d=>d[0]).attr("cy",d=>d[1]).attr("r",6)
+    .attr("fill","none").attr("stroke","#38d5f5").attr("stroke-width",2);
+  $("#hosts").innerHTML=S.top.map(x=>`<div class=row data-ip="${esc(x.ip)}"><span>${esc(x.ip)}</span><em>${x.score}</em><i style="width:${x.score}%"></i></div>`).join("");
+  document.querySelectorAll(".row").forEach(r=>r.onclick=()=>detail(r.dataset.ip));
+  bars("#cc",S.countries,S.countries[0]?.[1]||1);bars("#fam",S.families,S.families[0]?.[1]||1);
+  const t=S.trend;if(t.length>1){const lo=Math.min(...t.map(z=>z[1])),hi=Math.max(...t.map(z=>z[1]),lo+1);
+    const pts=t.map((z,i)=>`${i*300/(t.length-1)},${66-(z[1]-lo)*60/(hi-lo)}`).join(" ");
+    $("#trend").innerHTML=`<polyline points="${pts}" fill="none" stroke="#38d5f5" stroke-width="1.6"/>`;}
+  graph();
+}
+
+function graph(){
+  const g=S.graph.map(e=>e.data.id).join("|");if(g===sig)return;sig=g;
+  if(!cy){cy=cytoscape({container:$("#cy"),wheelSensitivity:.3,style:[
+    {selector:"node",style:{"font-size":8,color:"#9db3d6","text-valign":"bottom","text-margin-y":2}},
+    {selector:'node[type="ip"]',style:{"background-color":"#ff4d5e",width:"mapData(score,0,100,6,18)",height:"mapData(score,0,100,6,18)"}},
+    {selector:'node[type="fam"]',style:{"background-color":"#38d5f5",width:22,height:22,label:"data(label)"}},
+    {selector:'node[type="asn"]',style:{"background-color":"#ffc857",width:10,height:10}},
+    {selector:'node[type="cc"]',style:{"background-color":"#38e08c",width:14,height:14,label:"data(label)"}},
+    {selector:"edge",style:{width:.7,"line-color":"#2a4a7c",opacity:.7}}]});
+    cy.on("tap",'node[type="ip"]',e=>detail(e.target.data("label")));}
+  cy.elements().remove();cy.add(S.graph);
+  cy.layout({name:"cose",animate:false,nodeRepulsion:8000,idealEdgeLength:50}).run();cy.fit(undefined,20);
+}
+
+function log(ev){
+  const d=document.createElement("div"),t=new Date().toLocaleTimeString();
+  d.innerHTML=`<time>${t}</time> <b>NEW</b> ${esc(ev.ip)} ${esc(ev.fam)} ${esc(ev.cc)} score ${ev.score}`;
+  $("#log").prepend(d);while($("#log").children.length>30)$("#log").lastChild.remove();
+}
+const load=()=>fetch("/api/v1/snapshot").then(r=>r.json()).then(j=>{S=j;render()}).catch(()=>{$("#mode").textContent="BACKEND OFFLINE";$("#mode").className="badge"});
+load();setInterval(load,30000);
+new EventSource("/api/v1/stream").onmessage=e=>{
+  const ev=JSON.parse(e.data);if(ev.type!=="indicator")return;
+  arc(ev);log(ev);clearTimeout(timer);timer=setTimeout(load,2500);
+};
+setInterval(()=>{if(S&&S.points.length)arc(S.points[Math.floor(Math.random()*S.points.length)])},1200);
+</script>
+</body>
+</html>
